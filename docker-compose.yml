@@ -1,0 +1,30 @@
+# PostgreSQL LOKAL untuk Network Engineer Virtual Lab (opsional).
+# Pakai ini bila kamu belum punya PostgreSQL terinstall di laptop.
+# 100% lokal — tanpa cloud, tanpa internet setelah image terunduh.
+#
+# Cara pakai:
+#   docker compose up -d        # jalankan Postgres di background
+#   docker compose down         # hentikan
+#   docker compose down -v      # hentikan + hapus data (reset total)
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: nevl-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: network_lab
+    ports:
+      - "5432:5432"
+    volumes:
+      - nevl-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d network_lab"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  nevl-pgdata:

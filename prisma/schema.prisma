@@ -1,0 +1,33 @@
+// Prisma schema — Network Engineer Virtual Lab
+// Provider: PostgreSQL (instance LOKAL agar aplikasi tetap jalan offline).
+// Jangan pakai cloud DB (Supabase/Neon/dll) — syaratnya offline-first.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Progress per sub-bab Part 01 (index 0..14).
+// Satu baris per sub-bab yang pernah disentuh user.
+model SubbabProgress {
+  id        Int      @id @default(autoincrement())
+  subbab    Int      @unique // index sub-bab, 0..14
+  passed    Boolean  @default(false)
+  answers   Json?    // {"0": 2, "1": 0} — qIdx -> optIdx jawaban quiz yang dipilih
+  updatedAt DateTime @updatedAt
+
+  @@map("subbab_progress")
+}
+
+// Key-value kecil, mis. key="current" -> index sub-bab terakhir dibuka.
+model AppMeta {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+
+  @@map("app_meta")
+}
