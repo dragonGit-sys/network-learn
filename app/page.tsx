@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { HERO_HTML } from "@/lib/data";
+import { HERO_HTML } from "@/lib/parts";
 import PhaseBar from "@/components/PhaseBar";
 import Footer from "@/components/Footer";
 
@@ -10,7 +10,7 @@ export default function Home() {
         <div dangerouslySetInnerHTML={{ __html: HERO_HTML }} />
         <div className="hero-in">
           <div className="cta-row">
-            <Link className="btn" href="/part-01">
+            <Link className="btn" href="/part/01">
               Mulai Part 01 →
             </Link>
             <Link className="btn ghost" href="/kurikulum">
@@ -57,7 +57,7 @@ export default function Home() {
                 laptop dimatikan, dan tetap berfungsi <b>offline penuh</b>.
               </p>
               <div className="navrow">
-                <Link className="btn" href="/part-01">
+                <Link className="btn" href="/part/01">
                   Mulai dari Sub-bab 1.1 →
                 </Link>
               </div>

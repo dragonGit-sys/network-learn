@@ -11,19 +11,22 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-// Progress per sub-bab Part 01 (index 0..14).
-// Satu baris per sub-bab yang pernah disentuh user.
+// Progress per sub-bab per part.
+// Satu baris per (partId, subbab) yang pernah disentuh user.
+// partId: '01'..'39' (lihat PART_ORDER di lib/parts/types.ts)
+// subbab: id sub-bab, mis. "2.1"
 model SubbabProgress {
-  id        Int      @id @default(autoincrement())
-  subbab    Int      @unique // index sub-bab, 0..14
+  partId    String
+  subbab    String
   passed    Boolean  @default(false)
-  answers   Json?    // {"0": 2, "1": 0} — qIdx -> optIdx jawaban quiz yang dipilih
+  answers   Json? // {"0": 2, "1": 0} — qIdx -> optIdx jawaban quiz yang dipilih
   updatedAt DateTime @updatedAt
 
+  @@id([partId, subbab])
   @@map("subbab_progress")
 }
 
-// Key-value kecil, mis. key="current" -> index sub-bab terakhir dibuka.
+// Key-value kecil, mis. key="current:02" -> id sub-bab terakhir dibuka di Part 02.
 model AppMeta {
   key       String   @id
   value     String

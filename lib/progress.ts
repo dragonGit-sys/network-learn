@@ -1,50 +1,64 @@
-// Tipe + validasi data progress. Dipakai API route (server) dan halaman Part 01 (client).
+// Tipe + validasi + puzzle-gating progress MULTI-PART.
+// Dipakai API route (server) dan viewer part (client).
 // Validasi penting: data dari DB / localStorage / network tidak pernah dipercaya mentah.
 
-export interface ProgressState {
-  /** index sub-bab -> true bila quiz-nya lulus */
-  passed: Record<number, true>;
-  /** index sub-bab -> { index soal -> index opsi yang dipilih } */
-  answers: Record<number, Record<number, number>>;
-  /** index sub-bab terakhir dibuka */
-  current: number;
+import { PART_ORDER, type Part } from './parts/types';
+
+export interface PartProgressState {
+  /** subbab id -> true bila quiz-nya lulus */
+  passed: Record<string, true>;
+  /** subbab id -> { index soal -> index opsi yang dipilih } */
+  answers: Record<string, Record<number, number>>;
+  /** id sub-bab terakhir dibuka */
+  current: string;
 }
 
-export const emptyProgress = (): ProgressState => ({ passed: {}, answers: {}, current: 0 });
+/** partId -> progress part tersebut */
+export type AllProgress = Record<string, PartProgressState>;
 
-export interface LessonMeta {
+export const emptyPartProgress = (): PartProgressState => ({
+  passed: {},
+  answers: {},
+  current: '',
+});
+
+export const emptyAllProgress = (): AllProgress => ({});
+
+export interface SubbabQuizMeta {
   quizLength: number;
   optionCount: (qIdx: number) => number;
 }
 
 /**
- * Bersihkan & validasi state progress terhadap struktur quiz aktual.
- * Mengembalikan state yang aman dipakai; field tak valid dibuang.
+ * Bersihkan & validasi progress satu part terhadap struktur quiz aktualnya.
  */
-export function sanitizeProgress(
-  raw: unknown,
-  lessonCount: number,
-  metaFor: (i: number) => LessonMeta,
-): ProgressState {
-  const clean = emptyProgress();
+export function sanitizePartProgress(raw: unknown, part: Part): PartProgressState {
+  const clean = emptyPartProgress();
   if (!raw || typeof raw !== 'object') return clean;
   const d = raw as Record<string, unknown>;
+  const ids = new Set(part.subbabs.map((s) => s.id));
+  const metaFor = (id: string): SubbabQuizMeta => {
+    const sb = part.subbabs.find((s) => s.id === id);
+    return {
+      quizLength: sb?.quiz.length ?? 0,
+      optionCount: (qIdx: number) => sb?.quiz[qIdx]?.options.length ?? 0,
+    };
+  };
 
   if (d.passed && typeof d.passed === 'object') {
     for (const k of Object.keys(d.passed)) {
-      const i = parseInt(k, 10);
-      if ((d.passed as Record<string, unknown>)[k] && Number.isInteger(i) && i >= 0 && i < lessonCount) {
-        clean.passed[i] = true;
+      if ((d.passed as Record<string, unknown>)[k] && ids.has(k)) {
+        clean.passed[k] = true;
       }
     }
   }
 
   if (d.answers && typeof d.answers === 'object') {
     for (const k of Object.keys(d.answers)) {
-      const i = parseInt(k, 10);
+      if (!ids.has(k)) continue;
       const ans = (d.answers as Record<string, unknown>)[k];
-      if (!Number.isInteger(i) || i < 0 || i >= lessonCount || !ans || typeof ans !== 'object') continue;
-      const meta = metaFor(i);
+      if (!ans || typeof ans !== 'object') continue;
+      const meta = metaFor(k);
       const perQ: Record<number, number> = {};
       for (const q of Object.keys(ans)) {
         const qi = parseInt(q, 10);
@@ -56,19 +70,80 @@ export function sanitizeProgress(
           perQ[qi] = oi;
         }
       }
-      if (Object.keys(perQ).length > 0) clean.answers[i] = perQ;
+      if (Object.keys(perQ).length > 0) clean.answers[k] = perQ;
     }
   }
 
-  if (typeof d.current === 'number' && Number.isInteger(d.current) && d.current >= 0 && d.current < lessonCount) {
+  if (typeof d.current === 'string' && ids.has(d.current)) {
     clean.current = d.current;
   }
   return clean;
 }
 
-/** Sub-bab i terbuka bila i==0 atau sub-bab i-1 sudah lulus (puzzle gating). */
-export function isUnlocked(i: number, passed: Record<number, true>): boolean {
-  return i === 0 || !!passed[i - 1];
+/** Validasi seluruh map progress terhadap daftar part yang dikenal. */
+export function sanitizeAllProgress(raw: unknown, parts: Part[]): AllProgress {
+  const clean: AllProgress = {};
+  if (!raw || typeof raw !== 'object') return clean;
+  const byId = new Map(parts.map((p) => [p.id, p]));
+  for (const [pid, pstate] of Object.entries(raw as Record<string, unknown>)) {
+    const part = byId.get(pid);
+    if (part) clean[pid] = sanitizePartProgress(pstate, part);
+  }
+  return clean;
 }
 
-export const STORAGE_KEY = 'nevl-part01-progress-v1';
+export function prevPartId(partId: string): string | null {
+  const i = PART_ORDER.indexOf(partId);
+  return i > 0 ? PART_ORDER[i - 1] : null;
+}
+
+export function nextPartId(partId: string): string | null {
+  const i = PART_ORDER.indexOf(partId);
+  return i >= 0 && i < PART_ORDER.length - 1 ? PART_ORDER[i + 1] : null;
+}
+
+/**
+ * Part terbuka bila ia part pertama, atau sub-bab TERAKHIR part sebelumnya lulus.
+ * getPart: lookup part dari registry (menghindari circular import).
+ */
+export function isPartUnlocked(
+  partId: string,
+  all: AllProgress,
+  getPart: (id: string) => Part | undefined,
+): boolean {
+  if (partId === PART_ORDER[0]) return true;
+  const prev = prevPartId(partId);
+  if (!prev) return true;
+  const prevPart = getPart(prev);
+  if (!prevPart || prevPart.subbabs.length === 0) return false;
+  const lastId = prevPart.subbabs[prevPart.subbabs.length - 1].id;
+  return !!all[prev]?.passed[lastId];
+}
+
+/** Sub-bab idx terbuka bila idx==0 (dan part-nya terbuka) atau sub-bab sebelumnya lulus. */
+export function isSubbabUnlocked(
+  part: Part,
+  idx: number,
+  all: AllProgress,
+  getPart: (id: string) => Part | undefined,
+): boolean {
+  if (idx === 0) return isPartUnlocked(part.id, all, getPart);
+  const prevId = part.subbabs[idx - 1].id;
+  return !!all[part.id]?.passed[prevId];
+}
+
+/** Jumlah sub-bab lulus dalam satu part. */
+export function partProgressCount(part: Part, all: AllProgress): number {
+  const st = all[part.id];
+  if (!st) return 0;
+  return part.subbabs.filter((s) => st.passed[s.id]).length;
+}
+
+/** Apakah seluruh part tuntas (semua sub-bab lulus). */
+export function isPartComplete(part: Part, all: AllProgress): boolean {
+  return partProgressCount(part, all) === part.subbabs.length && part.subbabs.length > 0;
+}
+
+export const STORAGE_KEY = 'nevl-progress-v2';
+/** Key lama (Part 01 saja) — dipakai sekali untuk migrasi ke v2. */
+export const LEGACY_STORAGE_KEY = 'nevl-part01-progress-v1';

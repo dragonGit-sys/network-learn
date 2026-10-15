@@ -1,15 +1,15 @@
-import { NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
-import { LESSONS } from "@/lib/data";
-import { sanitizeProgress, type ProgressState } from "@/lib/progress";
+import { NextResponse } from 'next/server';
+import { prisma } from '@/lib/prisma';
+import { getPart, PARTS } from '@/lib/parts';
+import {
+  sanitizePartProgress,
+  sanitizeAllProgress,
+  type AllProgress,
+  type PartProgressState,
+} from '@/lib/progress';
 
-const metaFor = (i: number) => ({
-  quizLength: LESSONS[i]?.quiz.length ?? 0,
-  optionCount: (qIdx: number) => LESSONS[i]?.quiz[qIdx]?.o.length ?? 0,
-});
-
-function toJson(state: ProgressState) {
-  return { passed: state.passed, answers: state.answers, current: state.current };
+function toJsonPart(s: PartProgressState) {
+  return { passed: s.passed, answers: s.answers, current: s.current };
 }
 
 /**
@@ -18,77 +18,111 @@ function toJson(state: ProgressState) {
  */
 export async function GET() {
   try {
-    const [rows, meta] = await Promise.all([
+    const [rows, metas] = await Promise.all([
       prisma.subbabProgress.findMany(),
-      prisma.appMeta.findUnique({ where: { key: "current" } }),
+      prisma.appMeta.findMany(),
     ]);
-    const raw: Record<string, unknown> = { passed: {}, answers: {}, current: 0 };
+    const raw: Record<string, unknown> = {};
     for (const r of rows) {
-      if (r.passed) (raw.passed as Record<string, unknown>)[String(r.subbab)] = true;
-      if (r.answers) (raw.answers as Record<string, unknown>)[String(r.subbab)] = r.answers;
+      const p = ((raw[r.partId] ??= {}) as Record<string, unknown>);
+      const pp = ((p.passed ??= {}) as Record<string, unknown>);
+      const an = ((p.answers ??= {}) as Record<string, unknown>);
+      if (r.passed) pp[r.subbab] = true;
+      if (r.answers) an[r.subbab] = r.answers;
     }
-    if (meta) raw.current = parseInt(meta.value, 10);
-    const clean = sanitizeProgress(raw, LESSONS.length, metaFor);
-    return NextResponse.json({ ok: true, persisted: true, ...toJson(clean) });
-  } catch (e) {
+    for (const m of metas) {
+      if (m.key.startsWith('current:')) {
+        const pid = m.key.slice('current:'.length);
+        const p = ((raw[pid] ??= {}) as Record<string, unknown>);
+        p.current = m.value;
+      }
+    }
+    const clean = sanitizeAllProgress(raw, PARTS);
+    const parts: AllProgress = {};
+    for (const [pid, st] of Object.entries(clean)) parts[pid] = toJsonPart(st);
+    return NextResponse.json({ ok: true, persisted: true, parts });
+  } catch {
     return NextResponse.json(
-      { ok: false, persisted: false, error: "Database tidak terjangkau." },
+      { ok: false, persisted: false, error: 'Database tidak terjangkau.' },
       { status: 503 },
     );
   }
 }
 
 /**
- * POST /api/progress — simpan progress.
- * Body: { passed: {idx: true}, answers: {idx: {qIdx: optIdx}}, current: idx }
+ * POST /api/progress — simpan progress satu part.
+ * Body: { partId: '02', passed: {subbabId: true}, answers: {subbabId: {qIdx: optIdx}}, current: subbabId }
  */
 export async function POST(req: Request) {
   try {
-    const body: unknown = await req.json();
-    const clean = sanitizeProgress(body, LESSONS.length, metaFor);
+    const body = (await req.json()) as {
+      partId?: unknown;
+      passed?: unknown;
+      answers?: unknown;
+      current?: unknown;
+    };
+    const partId = typeof body.partId === 'string' ? body.partId : '';
+    const part = getPart(partId);
+    if (!part) {
+      return NextResponse.json({ ok: false, error: 'partId tidak dikenal.' }, { status: 400 });
+    }
+    const clean = sanitizePartProgress(body, part);
 
     await prisma.$transaction(async (tx) => {
-      await tx.subbabProgress.deleteMany();
-      const touched = new Set<number>([
-        ...Object.keys(clean.passed).map(Number),
-        ...Object.keys(clean.answers).map(Number),
+      await tx.subbabProgress.deleteMany({ where: { partId } });
+      const touched = new Set<string>([
+        ...Object.keys(clean.passed),
+        ...Object.keys(clean.answers),
       ]);
-      for (const i of touched) {
+      for (const sid of touched) {
         await tx.subbabProgress.create({
           data: {
-            subbab: i,
-            passed: !!clean.passed[i],
-            answers: clean.answers[i] ?? undefined,
+            partId,
+            subbab: sid,
+            passed: !!clean.passed[sid],
+            answers: clean.answers[sid] ?? undefined,
           },
         });
       }
       await tx.appMeta.upsert({
-        where: { key: "current" },
-        update: { value: String(clean.current) },
-        create: { key: "current", value: String(clean.current) },
+        where: { key: `current:${partId}` },
+        update: { value: clean.current },
+        create: { key: `current:${partId}`, value: clean.current },
       });
     });
 
-    return NextResponse.json({ ok: true, persisted: true, ...toJson(clean) });
-  } catch (e) {
+    return NextResponse.json({ ok: true, persisted: true, partId, ...toJsonPart(clean) });
+  } catch {
     return NextResponse.json(
-      { ok: false, persisted: false, error: "Gagal menyimpan ke database." },
+      { ok: false, persisted: false, error: 'Gagal menyimpan ke database.' },
       { status: 503 },
     );
   }
 }
 
-/** DELETE /api/progress — hapus seluruh progress (reset). */
-export async function DELETE() {
+/**
+ * DELETE /api/progress — reset progress.
+ * ?partId=xx → hanya part itu; tanpa param → seluruh progress.
+ */
+export async function DELETE(req: Request) {
   try {
-    await prisma.$transaction([
-      prisma.subbabProgress.deleteMany(),
-      prisma.appMeta.deleteMany(),
-    ]);
+    const { searchParams } = new URL(req.url);
+    const partId = searchParams.get('partId');
+    if (partId) {
+      await prisma.$transaction([
+        prisma.subbabProgress.deleteMany({ where: { partId } }),
+        prisma.appMeta.deleteMany({ where: { key: `current:${partId}` } }),
+      ]);
+    } else {
+      await prisma.$transaction([
+        prisma.subbabProgress.deleteMany(),
+        prisma.appMeta.deleteMany(),
+      ]);
+    }
     return NextResponse.json({ ok: true, persisted: true });
-  } catch (e) {
+  } catch {
     return NextResponse.json(
-      { ok: false, persisted: false, error: "Gagal mereset database." },
+      { ok: false, persisted: false, error: 'Gagal mereset database.' },
       { status: 503 },
     );
   }
